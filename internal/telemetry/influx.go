@@ -32,7 +32,7 @@ func ConnectToInfluxDB(ctx context.Context) (influxdb2.Client, error) {
 	return client, err
 }
 
-func CreateWriteAPIBlocking(ctx context.Context, client influxdb2.Client, orgName string, bucketName string) (api.WriteAPIBlocking, error) {
+func CreateInfluxWriteAPIBlocking(ctx context.Context, client influxdb2.Client, orgName string, bucketName string) (api.WriteAPIBlocking, error) {
 	bucketsApi := client.BucketsAPI()
 	_, findBucketErr := bucketsApi.FindBucketByName(ctx, bucketName)
 	if findBucketErr != nil {

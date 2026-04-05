@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -10,15 +9,17 @@ import (
 	"time"
 
 	"github.com/coeusj/rock-tel/internal/telemetry"
-	influxdb2 "github.com/influxdata/influxdb-client-go"
 	"github.com/joho/godotenv"
+	"github.com/segmentio/kafka-go"
 )
 
 func main() {
-	godotenv.Load("../../test_influxdb.env")
+	godotenv.Load("../../dev.env")
 
-	// Create a context that is cancelled when the OS sends an interrupt signal
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	influxClient, err := telemetry.ConnectToInfluxDB(ctx)
@@ -26,60 +27,23 @@ func main() {
 		log.Println("ERROR: Could not connect to InfluxDB")
 		os.Exit(1)
 	}
+	defer influxClient.Close()
 
 	bucketName := os.Getenv("INFLUXDB_BUCKET_ROCKET_TELEMETRY")
 	orgName := os.Getenv("INFLUXDB_ORG_ROCKTEL")
-	writeApi, err := telemetry.CreateWriteAPIBlocking(ctx, influxClient, orgName, bucketName)
-	if err != nil {
-		os.Exit(1)
+
+	navReader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{os.Getenv("KAFKA_BROKER")},
+		GroupID:  os.Getenv("KAFKA_GROUP_ROCKET_TELEMETRY"),
+		Topic:    os.Getenv("KAFKA_TOPIC_NAVIGATION"),
+		MaxWait:  500 * time.Millisecond, // How long to wait for new data before polling
+		MinBytes: 10e3,                   // 10KB - batching for efficiency
+		MaxBytes: 10e6,                   // 10MB
+	})
+	navTelemetryWatcher := telemetry.NewNavigationTelemetryWatcher(ctx, navReader, influxClient, orgName, bucketName)
+	navTelemetryWatcherErr := navTelemetryWatcher.Start(ctx)
+	if navTelemetryWatcherErr != nil {
+		log.Printf("NavigationTelemetryWatcher error: %v", navTelemetryWatcherErr.Error())
 	}
-
-	consumer := telemetry.NewRocketTelemetryReader()
-	defer consumer.Reader.Close()
-
-	log.Println("Listening messages..")
-
-	for {
-		// 1. Fetch the message
-		// FetchMessage is better than ReadMessage for manual offset control
-		msg, err := consumer.Reader.FetchMessage(ctx)
-		if err != nil {
-			// If the error is because the context was cancelled, exit the loop normally
-			if ctx.Err() != nil {
-				log.Println("Shutdown signal received, exiting loop...")
-				break
-			}
-
-			log.Fatalf("Error while fetching message: %v", err)
-			continue
-		}
-
-		// 2. Process data (Your Logic Here)
-		var telemetryMsg telemetry.RocketTelemetry
-		unmarshalErr := json.Unmarshal(msg.Value, &telemetryMsg)
-		if unmarshalErr != nil {
-			log.Fatalf("Error while trying to unmarshal message: %v", err)
-			continue
-		}
-
-		point := influxdb2.NewPoint("rocket-telemetry",
-			map[string]string{"rocket_id": string(msg.Key)},
-			map[string]interface{}{"velocity": telemetryMsg.Velocity, "Altitude": telemetryMsg.Altitude},
-			time.Now())
-
-		// 4. Write processed message to InfluxDB
-		writeErr := writeApi.WritePoint(ctx, point)
-		if writeErr != nil {
-			log.Printf("Error while trying to write to Influx: %v", writeErr)
-			continue
-		}
-
-		// 5. COMMIT the offset
-		// This tells Kafka that the message was processed successfully
-		if err := consumer.Reader.CommitMessages(ctx, msg); err != nil {
-			log.Printf("Failed to commit message: %v", err)
-		}
-
-		log.Println("Message processed")
-	}
+	defer navTelemetryWatcher.Stop()
 }
