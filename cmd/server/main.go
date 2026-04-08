@@ -32,6 +32,9 @@ func main() {
 	bucketName := os.Getenv("INFLUXDB_BUCKET_ROCKET_TELEMETRY")
 	orgName := os.Getenv("INFLUXDB_ORG_ROCKTEL")
 
+	// Channel to collect startup errors
+	telStartErrChan := make(chan error, 2)
+
 	navReader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  []string{os.Getenv("KAFKA_BROKER")},
 		GroupID:  os.Getenv("KAFKA_GROUP_ROCKET_TELEMETRY"),
@@ -41,9 +44,43 @@ func main() {
 		MaxBytes: 10e6,                   // 10MB
 	})
 	navTelemetryWatcher := telemetry.NewNavigationTelemetryWatcher(ctx, navReader, influxClient, orgName, bucketName)
-	navTelemetryWatcherErr := navTelemetryWatcher.Start(ctx)
-	if navTelemetryWatcherErr != nil {
-		log.Printf("NavigationTelemetryWatcher error: %v", navTelemetryWatcherErr.Error())
-	}
+
+	go func() {
+		err := navTelemetryWatcher.Start(ctx)
+		if err != nil {
+			telStartErrChan <- err
+		}
+	}()
 	defer navTelemetryWatcher.Stop()
+
+	propulsionReader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{os.Getenv("KAFKA_BROKER")},
+		GroupID:  os.Getenv("KAFKA_GROUP_ROCKET_TELEMETRY"),
+		Topic:    os.Getenv("KAFKA_TOPIC_PROPULSION"),
+		MaxWait:  500 * time.Millisecond, // How long to wait for new data before polling
+		MinBytes: 10e3,                   // 10KB - batching for efficiency
+		MaxBytes: 10e6,                   // 10MB
+	})
+	propulsionTelemetryWatcher := telemetry.NewPropulsionTelemetryWatcher(ctx, propulsionReader, influxClient, orgName, bucketName)
+
+	go func() {
+		err := propulsionTelemetryWatcher.Start(ctx)
+		if err != nil {
+			telStartErrChan <- err
+		}
+	}()
+	defer propulsionTelemetryWatcher.Stop()
+
+	// Check for telemetry start errors
+	select {
+	case err := <-telStartErrChan:
+		log.Printf("Watcher startup error: %v", err)
+		return
+	default:
+		// No errors, continue
+	}
+
+	// Wait for shutdown signal
+	<-ctx.Done()
+	log.Println("Shutting down server...")
 }

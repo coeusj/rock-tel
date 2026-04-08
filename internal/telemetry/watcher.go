@@ -2,7 +2,7 @@ package telemetry
 
 import (
 	"context"
-	"errors"
+	"log"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go"
 	"github.com/segmentio/kafka-go"
@@ -30,7 +30,24 @@ func NewTelemetryWatcher(ctx context.Context, reader *kafka.Reader, influxClient
 }
 
 func (tw *TelemetryWatcher) Start(ctx context.Context) error {
-	return errors.New("Start method not implemented for TelemetryWatcher")
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			msg, err := tw.reader.FetchMessage(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				return err
+			}
+
+			log.Printf("Received message: %v", msg)
+			return nil
+		}
+	}
 }
 
 func (tw *TelemetryWatcher) Stop() error {
