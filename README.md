@@ -1,7 +1,21 @@
-# InfluxDB Setup
+# Rocket Telemetry Reader
 
-CREATE CONTAINER: compose and run InfluxDB container
-> docker-compose --env-file test_influxdb.env up
+Read telemetry from Kafka and push it into InfluxDB
 
-RUN TEST:
-> go test -v -tags=integration ./tests/integration/...
+InfluxDB Container - compose and run container:
+
+```bash
+docker-compose --env-file test_influxdb.env up
+```
+
+Run the application:
+
+```bash
+go run ./cmd/server/main.go
+```
+
+Run tests:
+
+```bash
+go test -v -tags=integration ./tests/integration/...
+```
